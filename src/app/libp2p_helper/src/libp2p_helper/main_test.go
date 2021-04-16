@@ -2,16 +2,20 @@ package main
 
 import (
 	"bufio"
-	"codanet"
 	"context"
 	crand "crypto/rand"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"codanet"
+
+	"github.com/bmatsuo/lmdb-go/lmdb"
 
 	logging "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p-core/crypto"
@@ -20,8 +24,8 @@ import (
 	peer "github.com/libp2p/go-libp2p-core/peer"
 	peerstore "github.com/libp2p/go-libp2p-core/peerstore"
 	protocol "github.com/libp2p/go-libp2p-core/protocol"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
-	"github.com/libp2p/go-libp2p-pubsub"
 	ma "github.com/multiformats/go-multiaddr"
 
 	"github.com/stretchr/testify/require"
@@ -958,4 +962,217 @@ func TestGetNodeStatus(t *testing.T) {
 	ret, err := msg.run(appC)
 	require.NoError(t, err)
 	require.Equal(t, appA.P2p.NodeStatus, ret)
+}
+
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randSeq(n int) string {
+	b := make([]rune, n)
+	rand.Seed(time.Now().UnixNano())
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
+}
+
+const benchDBMapSize = 1 << 40
+
+func BenchmarkLmdb_Txn(b *testing.B) {
+	env, err := lmdb.NewEnv()
+	require.NoError(b, err)
+	defer env.Close()
+
+	err = env.SetMaxDBs(1)
+	require.NoError(b, err)
+
+	err = env.SetMapSize(benchDBMapSize)
+	require.NoError(b, err)
+
+	lmdbPath, err := ioutil.TempDir("", "mdb_test")
+	require.NoError(b, err, "Cannot create temporary directory")
+	defer os.RemoveAll(lmdbPath)
+
+	err = env.Open(lmdbPath, 0, 0664)
+	defer env.Close()
+	require.NoError(b, err)
+
+	var dbi lmdb.DBI
+	require.NoError(b, err)
+
+	numEntries := 1000000
+	var data = map[string]string{}
+	var key string
+	var val string
+	for i := 0; i < numEntries; i++ {
+		key = randSeq(64)
+		val = randSeq(1024)
+		data[key] = val
+	}
+
+	b.ResetTimer()
+	_ = env.Update(func(txn *lmdb.Txn) (err error) {
+		dbi, err = txn.OpenRoot(0)
+		require.NoError(b, err)
+
+		for k, v := range data {
+			err = txn.Put(dbi, []byte(k), []byte(v), lmdb.NoOverwrite)
+			require.NoError(b, err)
+		}
+		return nil
+	})
+	b.StopTimer()
+
+	stat, err := env.Stat()
+	require.NoError(b, err, "Cannot get stat %s", err)
+	fmt.Println("stat.Entries", stat.Entries)
+	require.Equal(b, stat.Entries, uint64(numEntries))
+}
+
+func BenchmarkLmdb_ConcurrentTxn(b *testing.B) {
+	env, err := lmdb.NewEnv()
+	require.NoError(b, err)
+	defer env.Close()
+
+	err = env.SetMaxDBs(1)
+	require.NoError(b, err)
+
+	err = env.SetMapSize(benchDBMapSize)
+	require.NoError(b, err)
+
+	lmdbPath, err := ioutil.TempDir("", "mdb_test")
+	require.NoError(b, err, "Cannot create temporary directory")
+	defer os.RemoveAll(lmdbPath)
+
+	err = env.Open(lmdbPath, 0, 0664)
+	defer env.Close()
+	require.NoError(b, err)
+
+	var dbi lmdb.DBI
+	require.NoError(b, err)
+
+	// New DB
+	env1, err := lmdb.NewEnv()
+	require.NoError(b, err)
+	defer env.Close()
+
+	err = env1.SetMaxDBs(1)
+	require.NoError(b, err)
+
+	err = env1.SetMapSize(benchDBMapSize)
+	require.NoError(b, err)
+
+	lmdbPath1, err := ioutil.TempDir("", "mdb_test1")
+	require.NoError(b, err, "Cannot create temporary directory")
+	defer os.RemoveAll(lmdbPath1)
+
+	err = env1.Open(lmdbPath1, 0, 0664)
+	defer env1.Close()
+	require.NoError(b, err)
+
+	var dbi1 lmdb.DBI
+	require.NoError(b, err)
+
+	numEntries := 1000000
+	var data = map[string]string{}
+	var key string
+	var val string
+	for i := 0; i < numEntries; i++ {
+		key = randSeq(64)
+		val = randSeq(1024)
+		data[key] = val
+	}
+
+	wg := sync.WaitGroup{}
+
+	b.ResetTimer()
+
+	wg.Add(1)
+	go executeTxn(b, env, dbi, data, &wg)
+	wg.Add(1)
+	go executeTxn(b, env1, dbi1, data, &wg)
+
+	wg.Wait()
+	b.StopTimer()
+
+	stat, err := env.Stat()
+	require.NoError(b, err, "Cannot get stat %s", err)
+	fmt.Println("stat.Entries", stat.Entries)
+	require.Equal(b, stat.Entries, uint64(numEntries))
+
+	stat1, err := env1.Stat()
+	require.NoError(b, err, "Cannot get stat %s", err)
+	fmt.Println("stat1.Entries", stat1.Entries)
+	require.Equal(b, stat1.Entries, uint64(numEntries))
+}
+
+func BenchmarkLmdb_MultipleTxn(b *testing.B) {
+	env, err := lmdb.NewEnv()
+	require.NoError(b, err)
+	defer env.Close()
+
+	err = env.SetMaxDBs(1)
+	require.NoError(b, err)
+
+	err = env.SetMapSize(benchDBMapSize)
+	require.NoError(b, err)
+
+	lmdbPath, err := ioutil.TempDir("", "mdb_test")
+	require.NoError(b, err, "Cannot create temporary directory")
+	defer os.RemoveAll(lmdbPath)
+
+	err = env.Open(lmdbPath, 0, 0664)
+	defer env.Close()
+	require.NoError(b, err)
+
+	var dbi lmdb.DBI
+	require.NoError(b, err)
+
+	numEntries := 1000000
+	var key string
+	var val string
+
+	err = env.Update(func(txn *lmdb.Txn) (err error) {
+		dbi, err = txn.OpenRoot(0)
+		require.NoError(b, err)
+		return err
+	})
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	start := time.Now()
+	for i := 0; i < 250000; i++ {
+		_ = env.Update(func(txn *lmdb.Txn) (err error) {
+			for j := 0; j < 4; j++ {
+				key = randSeq(64)
+				val = randSeq(1024)
+				err = txn.Put(dbi, []byte(key), []byte(val), lmdb.NoOverwrite)
+				require.NoError(b, err)
+			}
+			return nil
+		})
+	}
+	b.StopTimer()
+	duration := time.Since(start)
+	fmt.Println(duration.Nanoseconds())
+
+	stat, err := env.Stat()
+	require.NoError(b, err, "Cannot get stat %s", err)
+	fmt.Println("stat.Entries", stat.Entries)
+	require.Equal(b, stat.Entries, uint64(numEntries))
+}
+
+func executeTxn(b *testing.B, env *lmdb.Env, dbi lmdb.DBI, data map[string]string, wg *sync.WaitGroup) {
+	b.Helper()
+	defer wg.Done()
+
+	_ = env.Update(func(txn *lmdb.Txn) (err error) {
+		dbi, err = txn.OpenRoot(0)
+		require.NoError(b, err)
+
+		for k, v := range data {
+			err = txn.Put(dbi, []byte(k), []byte(v), lmdb.NoOverwrite)
+			require.NoError(b, err)
+		}
+		return nil
+	})
 }
