@@ -4,6 +4,7 @@ go 1.13
 
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
+	github.com/bmatsuo/lmdb-go v1.8.0
 	github.com/campoy/jsonenums v0.0.0-20180221195324-eec6d38da64e
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/dgraph-io/ristretto v0.0.3 // indirect
