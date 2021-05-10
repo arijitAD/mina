@@ -1,35 +1,36 @@
 package main
 
 import (
-	"bufio"
-	"context"
-	crand "crypto/rand"
-	"fmt"
-	"io"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"sync"
-	"testing"
-	"time"
+    "bufio"
+    "context"
+    crand "crypto/rand"
+    "fmt"
+    "io"
+    "io/ioutil"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
+    "sync"
+    "testing"
+    "time"
 
-	"codanet"
-	logging "github.com/ipfs/go-log"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+    "codanet"
+    logging "github.com/ipfs/go-log"
+    "github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/host"
-	net "github.com/libp2p/go-libp2p-core/network"
-	peer "github.com/libp2p/go-libp2p-core/peer"
-	peerstore "github.com/libp2p/go-libp2p-core/peerstore"
-	protocol "github.com/libp2p/go-libp2p-core/protocol"
-
-	"github.com/libp2p/go-libp2p-pubsub"
-	ma "github.com/multiformats/go-multiaddr"
-
-	"github.com/stretchr/testify/require"
+    lmdbbs "github.com/filecoin-project/go-bs-lmdb"
+    "github.com/ipfs/go-bitswap"
+    "github.com/ipfs/go-bitswap/network"
+    "github.com/libp2p/go-libp2p-core/crypto"
+    "github.com/libp2p/go-libp2p-core/host"
+    net "github.com/libp2p/go-libp2p-core/network"
+    peer "github.com/libp2p/go-libp2p-core/peer"
+    peerstore "github.com/libp2p/go-libp2p-core/peerstore"
+    protocol "github.com/libp2p/go-libp2p-core/protocol"
+    "github.com/libp2p/go-libp2p-pubsub"
+    ma "github.com/multiformats/go-multiaddr"
+    "github.com/stretchr/testify/require"
 )
 
 var (
@@ -1131,4 +1132,16 @@ func getMetricsValue(t *testing.T, str string, pattern string) string {
 	require.Len(t, metricsData, 2)
 
 	return metricsData[1]
+}
+
+func TestBitswapInit(t *testing.T) {
+    appA := newTestApp(t, nil, true)
+
+    opts := lmdbbs.Options{InitialMmapSize: 64 << 20} // 64MiB, a large enough mmap size.
+    bstore, _ := lmdbbs.Open(&opts)
+
+    network := network.NewFromIpfsHost(appA.P2p.Host, appA.P2p.Dht, network.Prefix("/chain"))
+
+    btswp := bitswap.New(context.Background(), network, bstore)
+    fmt.Println(btswp)
 }
